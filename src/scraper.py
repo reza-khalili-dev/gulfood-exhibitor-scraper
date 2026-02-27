@@ -54,13 +54,14 @@ class GulfoodScraper:
         text = ''.join(char for char in str(text) if ord(char) >= 32 or char in '\n\r\t')
         return text.strip()
     
-    def fetch_page(self, start=0, limit=10):
+    def fetch_page(self, start=0, limit=10, initial_key=''):
+        """دریافت یک صفحه با قابلیت فیلتر حرف اول"""
         data = {
             'limit': limit,
             'start': start,
             'keyword_search': '',
             'cuntryId': '',
-            'InitialKey': '',
+            'InitialKey': initial_key,  # پارامتر فیلتر حرف اول
             'start_up_exhibitors': '',
             'type': '',
             'new_category': '',
@@ -70,11 +71,13 @@ class GulfoodScraper:
         }
         
         try:
+            key_text = f" با حرف {initial_key}" if initial_key else ""
+            self.logger.info(f"ارسال درخواست به API{key_text} با start={start}")
             response = self.session.post(self.api_url, data=data)
             response.raise_for_status()
             return response.text
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"خطا در دریافت صفحه {start}: {e}")
+            self.logger.error(f"خطا در دریافت صفحه {start}{key_text}: {e}")
             return None
     
     def extract_companies_from_list(self, html_content):
@@ -288,53 +291,75 @@ class GulfoodScraper:
             self.logger.error(f"خطا در پردازش صفحه جزئیات {profile_url}: {e}")
             return None
     
-    def scrape_all_companies(self, max_pages=None):
-        """استخراج کامل اطلاعات (لیست + جزئیات)"""
+    def scrape_all_companies(self, max_pages_per_letter=None):
+        """استخراج کامل اطلاعات با فیلتر حروف الفبا"""
         all_companies = []
-        start = 0
-        limit = 10
-        page = 1
         
-        self.logger.info("شروع استخراج اطلاعات شرکت‌ها...")
+        # حروف الفبا (A تا Z) + اعداد و علامت‌ها
+        alphabets = ['0-9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 
+                     'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z']
         
-        while True:
-            if max_pages and page > max_pages:
-                break
+        for letter in alphabets:
+            self.logger.info(f"==========================================")
+            self.logger.info(f"شروع استخراج شرکت‌های با حرف {letter}...")
+            self.logger.info(f"==========================================")
+            
+            start = 0
+            limit = 10
+            page = 1
+            empty_responses = 0
+            letter_companies = []
+            
+            while True:
+                if max_pages_per_letter and page > max_pages_per_letter:
+                    break
+                    
+                self.logger.info(f"  دریافت صفحه {page} برای حرف {letter} (start={start})...")
+                html_content = self.fetch_page(start=start, limit=limit, initial_key=letter)
                 
-            self.logger.info(f"دریافت صفحه {page} (start={start})...")
-            html_content = self.fetch_page(start=start, limit=limit)
-            
-            if not html_content:
-                break
-            
-            companies = self.extract_companies_from_list(html_content)
-            
-            if not companies:
-                self.logger.info("به انتهای لیست رسیدیم")
-                break
-            
-            for i, company in enumerate(companies, 1):
-                if company.get('profile_url'):
-                    self.logger.info(f"  دریافت جزئیات شرکت {i}/{len(companies)}: {company['نام شرکت'][:30]}...")
-                    details = self.extract_company_details(company['profile_url'])
-                    if details:
-                        company.update(details)
-                    time.sleep(1)
+                if not html_content:
+                    break
+                
+                companies = self.extract_companies_from_list(html_content)
+                
+                if not companies:
+                    empty_responses += 1
+                    if empty_responses >= 3:
+                        self.logger.info(f"  به انتهای لیست برای حرف {letter} رسیدیم")
+                        break
                 else:
-                    self.logger.warning(f"  شرکت {company['نام شرکت']} لینک صفحه جزئیات ندارد!")
+                    empty_responses = 0
+                    
+                    # دریافت جزئیات برای هر شرکت
+                    for i, company in enumerate(companies, 1):
+                        if company.get('profile_url'):
+                            self.logger.info(f"    دریافت جزئیات شرکت {i}/{len(companies)} برای حرف {letter}: {company['نام شرکت'][:30]}...")
+                            details = self.extract_company_details(company['profile_url'])
+                            if details:
+                                company.update(details)
+                            time.sleep(1)
+                        else:
+                            self.logger.warning(f"    شرکت {company['نام شرکت']} لینک صفحه جزئیات ندارد!")
+                    
+                    letter_companies.extend(companies)
+                    self.logger.info(f"  تعداد شرکت‌های این صفحه برای حرف {letter}: {len(companies)}")
+                    self.logger.info(f"  تعداد کل شرکت‌ها برای حرف {letter} تاکنون: {len(letter_companies)}")
+                
+                start += limit
+                page += 1
+                time.sleep(2)
             
-            all_companies.extend(companies)
-            self.logger.info(f"تعداد شرکت‌های این صفحه: {len(companies)}")
+            all_companies.extend(letter_companies)
+            self.logger.info(f"تعداد کل شرکت‌های حرف {letter}: {len(letter_companies)}")
             self.logger.info(f"تعداد کل شرکت‌ها تاکنون: {len(all_companies)}")
             
-            if len(all_companies) % 20 == 0:
-                self.save_companies_data(all_companies, f'companies_backup_{len(all_companies)}.json')
-            
-            start += limit
-            page += 1
-            time.sleep(2)
+            # ذخیره موقت بعد از هر حرف
+            self.save_companies_data(all_companies, f'companies_backup_after_{letter}.json')
+            time.sleep(3)  # مکث بین حروف
         
+        self.logger.info(f"==========================================")
         self.logger.info(f"استخراج کامل شد. تعداد کل شرکت‌ها: {len(all_companies)}")
+        self.logger.info(f"==========================================")
         return all_companies
     
     def save_companies_data(self, data, filename='companies_data.json'):
